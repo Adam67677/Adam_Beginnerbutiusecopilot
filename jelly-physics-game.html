@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Jelly Physics Simulation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Arial', sans-serif;
+        }
+        
+        #container {
+            position: relative;
+            width: 90vw;
+            height: 90vh;
+            max-width: 1200px;
+            max-height: 800px;
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 14px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 10;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            font-size: 12px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 10;
+        }
+        
+        .control-line {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="canvas"></canvas>
+        <div id="info">
+            <div>🍮 Jelly Physics Simulation</div>
+            <div>FPS: <span id="fps">60</span></div>
+        </div>
+        <div id="controls">
+            <div class="control-line">🖱️ Click & Drag to poke the jelly</div>
+            <div class="control-line">📱 Use arrow keys to rotate view</div>
+            <div class="control-line">🌀 Jelly wobbles with physics</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Set canvas size
+        function resizeCanvas() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // 3D Vector Math
+        class Vector3 {
+            constructor(x = 0, y = 0, z = 0) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+            }
+
+            add(v) {
+                return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
+            }
+
+            sub(v) {
+                return new Vector3(this.x - v.x, this.y - v.y, this.z - v.z);
+            }
+
+            mul(scalar) {
+                return new Vector3(this.x * scalar, this.y * scalar, this.z * scalar);
+            }
+
+            dot(v) {
+                return this.x * v.x + this.y * v.y + this.z * v.z;
+            }
+
+            cross(v) {
+                return new Vector3(
+                    this.y * v.z - this.z * v.y,
+                    this.z * v.x - this.x * v.z,
+                    this.x * v.y - this.y * v.x
+                );
+            }
+
+            length() {
+                return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+            }
+
+            normalize() {
+                const len = this.length();
+                return len > 0 ? this.mul(1 / len) : this;
+            }
+
+            copy() {
+                return new Vector3(this.x, this.y, this.z);
+            }
+        }
+
+        // Particle class
+        class Particle {
+            constructor(x, y, z) {
+                this.pos = new Vector3(x, y, z);
+                this.oldPos = this.pos.copy();
+                this.vel = new Vector3(0, 0, 0);
+                this.acc = new Vector3(0, 0, 0.2); // gravity
+                this.pinned = false;
+                this.radius = 4;
+            }
+
+            update() {
+                if (this.pinned) return;
+
+                // Verlet integration
+                const vel = this.pos.sub(this.oldPos).mul(0.99); // damping
+                this.oldPos = this.pos.copy();
+                this.pos = this.pos.add(vel).add(this.acc);
+                this.acc = new Vector3(0, 0, 0.2); // reset acceleration
+            }
+
+            applyForce(force) {
+                this.acc = this.acc.add(force);
+            }
+
+            constrain(x, y, z, width, height, depth) {
+                // Bounce off walls
+                if (this.pos.x < x + this.radius) this.pos.x = x + this.radius;
+                if (this.pos.x > x + width - this.radius) this.pos.x = x + width - this.radius;
+                if (this.pos.y < y + this.radius) this.pos.y = y + this.radius;
+                if (this.pos.y > y + height - this.radius) this.pos.y = y + height - this.radius;
+                if (this.pos.z < z + this.radius) this.pos.z = z + this.radius;
+                if (this.pos.z > z + depth - this.radius) this.pos.z = z + depth - this.radius;
+            }
+        }
+
+        // Constraint (spring)
+        class Constraint {
+            constructor(p1, p2, restDist = null) {
+                this.p1 = p1;
+                this.p2 = p2;
+                this.restDist = restDist || p1.pos.sub(p2.pos).length();
+                this.stiffness = 0.95;
+            }
+
+            update() {
+                const delta = this.p2.pos.sub(this.p1.pos);
+                const dist = delta.length();
+                const diff = (dist - this.restDist) / dist;
+                const offset = delta.mul(diff * this.stiffness * 0.5);
+
+                if (!this.p1.pinned) this.p1.pos = this.p1.pos.add(offset);
+                if (!this.p2.pinned) this.p2.pos = this.p2.pos.sub(offset);
+            }
+        }
+
+        // Jelly object
+        class Jelly {
+            constructor(x, y, z, size) {
+                this.particles = [];
+                this.constraints = [];
+                this.size = size;
+                this.x = x;
+                this.y = y;
+                this.z = z;
+
+                // Create particles in a grid
+                const res = 4; // resolution
+                const spacing = size / (res - 1);
+
+                for (let i = 0; i < res; i++) {
+                    for (let j = 0; j < res; j++) {
+                        for (let k = 0; k < res; k++) {
+                            const px = x - size / 2 + i * spacing;
+                            const py = y - size / 2 + j * spacing;
+                            const pz = z + k * spacing;
+                            const particle = new Particle(px, py, pz);
+
+                            // Pin top corners for stability
+                            if (j === 0 && (i === 0 || i === res - 1) && (k === 0 || k === res - 1)) {
+                                particle.pinned = true;
+                            }
+
+                            this.particles.push(particle);
+                        }
+                    }
+                }
+
+                // Create constraints
+                for (let i = 0; i < this.particles.length; i++) {
+                    for (let j = i + 1; j < this.particles.length; j++) {
+                        const dist = this.particles[i].pos.sub(this.particles[j].pos).length();
+                        if (dist < spacing * 1.5) {
+                            this.constraints.push(new Constraint(this.particles[i], this.particles[j]));
+                        }
+                    }
+                }
+            }
+
+            update(containerX, containerY, containerZ, width, height, depth) {
+                for (let particle of this.particles) {
+                    particle.update();
+                    particle.constrain(containerX, containerY, containerZ, width, height, depth);
+                }
+
+                for (let i = 0; i < 3; i++) {
+                    for (let constraint of this.constraints) {
+                        constraint.update();
+                    }
+                }
+            }
+
+            poke(x, y, z, force = 0.5) {
+                for (let particle of this.particles) {
+                    const delta = particle.pos.sub(new Vector3(x, y, z));
+                    const dist = delta.length();
+                    if (dist < 40) {
+                        const strength = (1 - dist / 40) * force;
+                        particle.pos = particle.pos.add(delta.normalize().mul(strength * 10));
+                    }
+                }
+            }
+        }
+
+        // 3D to 2D projection
+        function project3D(pos, rotX, rotY, scale = 1) {
+            let x = pos.x;
+            let y = pos.y;
+            let z = pos.z;
+
+            // Rotate around X axis
+            let y1 = y * Math.cos(rotX) - z * Math.sin(rotX);
+            let z1 = y * Math.sin(rotX) + z * Math.cos(rotX);
+
+            // Rotate around Y axis
+            let x2 = x * Math.cos(rotY) + z1 * Math.sin(rotY);
+            let z2 = -x * Math.sin(rotY) + z1 * Math.cos(rotY);
+
+            // Perspective
+            const perspective = 500;
+            const factor = perspective / (perspective + z2);
+
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            return {
+                x: centerX + x2 * factor * scale,
+                y: centerY + y1 * factor * scale,
+                z: z2,
+                factor: factor
+            };
+        }
+
+        // Input handling
+        let mouse = { x: 0, y: 0, down: false };
+        let rotation = { x: 0, y: 0 };
+        let keys = {};
+
+        document.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+        });
+
+        document.addEventListener('mousedown', () => {
+            mouse.down = true;
+        });
+
+        document.addEventListener('mouseup', () => {
+            mouse.down = false;
+        });
+
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        // Create jelly
+        const jelly = new Jelly(canvas.width / 2, canvas.height / 2, 200, 80);
+
+        // Animation loop
+        let lastTime = Date.now();
+        let frameCount = 0;
+
+        function animate() {
+            const now = Date.now();
+            const deltaTime = now - lastTime;
+            lastTime = now;
+
+            // Update rotation with arrow keys
+            if (keys['ArrowUp']) rotation.x -= 0.05;
+            if (keys['ArrowDown']) rotation.x += 0.05;
+            if (keys['ArrowLeft']) rotation.y -= 0.05;
+            if (keys['ArrowRight']) rotation.y += 0.05;
+
+            // Clamp rotation
+            rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotation.x));
+
+            // Update jelly
+            jelly.update(0, 0, 0, canvas.width, canvas.height, 400);
+
+            // Poke jelly with mouse
+            if (mouse.down) {
+                jelly.poke(mouse.x, mouse.y, 200, 1);
+            }
+
+            // Clear canvas
+            ctx.fillStyle = 'rgba(30, 30, 60, 0.3)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw jelly particles
+            const projected = jelly.particles.map(p => ({
+                p,
+                proj: project3D(p.pos, rotation.x, rotation.y, 1.2)
+            }));
+
+            // Sort by depth (painter's algorithm)
+            projected.sort((a, b) => a.proj.z - b.proj.z);
+
+            // Draw particles
+            for (let item of projected) {
+                const p = item.proj;
+                const brightness = Math.floor(100 + p.factor * 150);
+                ctx.fillStyle = `hsl(280, 100%, ${brightness}%)`;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, item.p.radius * p.factor, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Draw constraints
+            ctx.strokeStyle = 'rgba(150, 100, 200, 0.3)';
+            ctx.lineWidth = 1;
+            for (let constraint of jelly.constraints) {
+                const p1 = project3D(constraint.p1.pos, rotation.x, rotation.y, 1.2);
+                const p2 = project3D(constraint.p2.pos, rotation.x, rotation.y, 1.2);
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
+            }
+
+            // Update FPS
+            frameCount++;
+            if (now - lastTime > 1000) {
+                document.getElementById('fps').textContent = frameCount;
+                frameCount = 0;
+                lastTime = now;
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
